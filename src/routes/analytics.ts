@@ -72,4 +72,34 @@ router.get('/top-products', requireAuth, adminOnly, async (req, res) => {
   }
 });
 
+// Customer KPIs for the dashboard. Repeat rate is repeat buyers over all
+// buyers (not all users), so signups that never ordered don't dilute it.
+router.get('/customers', requireAuth, adminOnly, async (_req, res) => {
+  try {
+    const result = await pool.query(`
+      WITH buyer_orders AS (
+        SELECT user_id, COUNT(*)::int AS orders_count
+        FROM orders
+        WHERE status <> 'cancelled'
+        GROUP BY user_id
+      )
+      SELECT
+        (SELECT COUNT(*)::int FROM users WHERE role = 'customer') AS total_customers,
+        (SELECT COUNT(*)::int FROM users
+         WHERE role = 'customer' AND created_at >= now() - interval '30 days') AS new_customers,
+        (SELECT COUNT(*)::int FROM buyer_orders) AS buyers,
+        (SELECT COUNT(*)::int FROM buyer_orders WHERE orders_count >= 2) AS repeat_buyers
+    `);
+    const row = result.rows[0];
+    res.json({
+      total_customers: row.total_customers,
+      new_customers: row.new_customers,
+      repeat_rate: row.buyers > 0 ? row.repeat_buyers / row.buyers : 0,
+    });
+  } catch (err) {
+    console.error('Customer analytics error:', err);
+    res.status(500).json({ error: 'Failed to fetch customer analytics' });
+  }
+});
+
 export default router;
