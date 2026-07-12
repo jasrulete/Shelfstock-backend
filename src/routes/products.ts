@@ -7,6 +7,43 @@ const router = Router();
 
 const SORTABLE_COLUMNS = new Set(['price', 'name', 'created_at']);
 
+function parseId(raw: string): number | null {
+  // Reject anything that isn't a plain positive integer so bad ids become
+  // a 404, never a pg cast error surfacing as a 500.
+  if (!/^\d+$/.test(raw)) return null;
+  const id = Number(raw);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+// Shared field validation for create/update. Returns an error message or
+// null. For updates, missing (undefined) fields are allowed and left as-is.
+function validateProductFields(body: any, requireAll: boolean): string | null {
+  const { name, description, price, category, stock, image_url } = body ?? {};
+
+  if (requireAll && (name === undefined || price === undefined || category === undefined)) {
+    return 'name, price, and category are required';
+  }
+  if (name !== undefined && (typeof name !== 'string' || !name.trim() || name.length > 255)) {
+    return 'name must be a non-empty string (max 255 chars)';
+  }
+  if (description !== undefined && description !== null && typeof description !== 'string') {
+    return 'description must be a string';
+  }
+  if (price !== undefined && (typeof price !== 'number' || !Number.isFinite(price) || price < 0)) {
+    return 'price must be a non-negative number';
+  }
+  if (category !== undefined && (typeof category !== 'string' || !category.trim() || category.length > 100)) {
+    return 'category must be a non-empty string (max 100 chars)';
+  }
+  if (stock !== undefined && (!Number.isSafeInteger(stock) || stock < 0)) {
+    return 'stock must be a non-negative whole number';
+  }
+  if (image_url !== undefined && image_url !== null && typeof image_url !== 'string') {
+    return 'image_url must be a string';
+  }
+  return null;
+}
+
 /**
  * GET /api/products
  * Query params: search, category, minPrice, maxPrice, sort, order, page, limit
@@ -89,8 +126,13 @@ router.get('/', async (req, res) => {
 });
 
 router.get('/:id', async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id === null) {
+    return res.status(404).json({ error: 'Product not found' });
+  }
+
   try {
-    const result = await pool.query('SELECT * FROM products WHERE id = $1', [req.params.id]);
+    const result = await pool.query('SELECT * FROM products WHERE id = $1', [id]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Product not found' });
     }
@@ -102,18 +144,19 @@ router.get('/:id', async (req, res) => {
 });
 
 router.post('/', requireAuth, adminOnly, async (req, res) => {
-  const { name, description, price, category, stock, image_url } = req.body ?? {};
-
-  if (!name || price === undefined || !category) {
-    return res.status(400).json({ error: 'name, price, and category are required' });
+  const validationError = validateProductFields(req.body, true);
+  if (validationError) {
+    return res.status(400).json({ error: validationError });
   }
+
+  const { name, description, price, category, stock, image_url } = req.body;
 
   try {
     const result = await pool.query(
       `INSERT INTO products (name, description, price, category, stock, image_url)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [name, description ?? null, price, category, stock ?? 0, image_url ?? null]
+      [name.trim(), description ?? null, price, category.trim(), stock ?? 0, image_url || null]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -123,6 +166,16 @@ router.post('/', requireAuth, adminOnly, async (req, res) => {
 });
 
 router.put('/:id', requireAuth, adminOnly, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id === null) {
+    return res.status(404).json({ error: 'Product not found' });
+  }
+
+  const validationError = validateProductFields(req.body, false);
+  if (validationError) {
+    return res.status(400).json({ error: validationError });
+  }
+
   const { name, description, price, category, stock, image_url } = req.body ?? {};
 
   try {
@@ -136,7 +189,7 @@ router.put('/:id', requireAuth, adminOnly, async (req, res) => {
            image_url = COALESCE($6, image_url)
        WHERE id = $7
        RETURNING *`,
-      [name, description, price, category, stock, image_url, req.params.id]
+      [name, description, price, category, stock, image_url, id]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Product not found' });
@@ -149,15 +202,26 @@ router.put('/:id', requireAuth, adminOnly, async (req, res) => {
 });
 
 router.delete('/:id', requireAuth, adminOnly, async (req, res) => {
+  const id = parseId(req.params.id);
+  if (id === null) {
+    return res.status(404).json({ error: 'Product not found' });
+  }
+
   try {
-    const result = await pool.query('DELETE FROM products WHERE id = $1 RETURNING id', [
-      req.params.id,
-    ]);
+    const result = await pool.query('DELETE FROM products WHERE id = $1 RETURNING id', [id]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Product not found' });
     }
     res.status(204).send();
-  } catch (err) {
+  } catch (err: any) {
+    // 23503 = foreign key violation: the product appears in order_items.
+    // Deleting it would orphan historical orders, so we refuse instead of
+    // cascading. Setting stock to 0 effectively retires a product.
+    if (err?.code === '23503') {
+      return res.status(409).json({
+        error: 'This product has existing orders and cannot be deleted. Set its stock to 0 to retire it instead.',
+      });
+    }
     console.error('Delete product error:', err);
     res.status(500).json({ error: 'Failed to delete product' });
   }

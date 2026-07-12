@@ -25,12 +25,19 @@ export interface Product {
   created_at: string;
 }
 
+export type OrderStatus = 'pending' | 'shipped' | 'completed' | 'cancelled';
+
 export interface Order {
   id: number;
   user_id: number;
   total_amount: string;
   currency: string;
-  status: 'pending' | 'completed' | 'cancelled';
+  status: OrderStatus;
+  payment_method: string;
+  shipping_name: string | null;
+  shipping_phone: string | null;
+  shipping_address: string | null;
+  shipping_city: string | null;
   created_at: string;
 }
 
