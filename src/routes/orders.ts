@@ -3,6 +3,7 @@ import { pool } from '../db';
 import { requireAuth } from '../middleware/auth';
 import { adminOnly } from '../middleware/adminOnly';
 import { OrderStatus } from '../types';
+import { sendOrderConfirmation, sendOrderShipped } from '../mail';
 
 const router = Router();
 
@@ -71,7 +72,8 @@ router.post('/', requireAuth, async (req, res) => {
     await client.query('BEGIN');
 
     let total = 0;
-    const snapshottedItems: { productId: number; quantity: number; price: number }[] = [];
+    const snapshottedItems: { productId: number; quantity: number; price: number; name: string }[] =
+      [];
 
     for (const item of items) {
       if (
@@ -103,7 +105,12 @@ router.post('/', requireAuth, async (req, res) => {
 
       const price = Number(product.price);
       total += price * item.quantity;
-      snapshottedItems.push({ productId: item.productId, quantity: item.quantity, price });
+      snapshottedItems.push({
+        productId: item.productId,
+        quantity: item.quantity,
+        price,
+        name: product.name,
+      });
 
       await client.query('UPDATE products SET stock = stock - $1 WHERE id = $2', [
         item.quantity,
@@ -134,6 +141,13 @@ router.post('/', requireAuth, async (req, res) => {
 
     await client.query('COMMIT');
     res.status(201).json(order);
+
+    // Fire-and-forget after the response: an email failure only logs and
+    // can never fail (or slow down) the order itself.
+    pool
+      .query('SELECT email FROM users WHERE id = $1', [req.user!.userId])
+      .then(({ rows }) => rows[0] && sendOrderConfirmation(rows[0].email, order, snapshottedItems))
+      .catch((emailErr) => console.error('Order confirmation email error:', emailErr));
   } catch (err: any) {
     await client.query('ROLLBACK');
     if (err?.status) {
@@ -320,7 +334,15 @@ router.patch('/:id/status', requireAuth, adminOnly, async (req, res) => {
     );
 
     await client.query('COMMIT');
-    res.json(updated.rows[0]);
+    const updatedOrder = updated.rows[0];
+    res.json(updatedOrder);
+
+    if (status === 'shipped') {
+      pool
+        .query('SELECT email FROM users WHERE id = $1', [updatedOrder.user_id])
+        .then(({ rows }) => rows[0] && sendOrderShipped(rows[0].email, updatedOrder))
+        .catch((emailErr) => console.error('Order shipped email error:', emailErr));
+    }
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Update order status error:', err);
