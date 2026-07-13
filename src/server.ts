@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import { createApp } from './app';
+import { startWinbackSchedule } from './jobs/winback';
 
 // Fail fast at boot rather than at the first login attempt: a missing
 // JWT_SECRET would otherwise sign tokens with the string "undefined".
@@ -20,4 +21,5 @@ const app = createApp();
 
 app.listen(PORT, () => {
   console.log(`ShelfStock API listening on port ${PORT}`);
+  startWinbackSchedule();
 });

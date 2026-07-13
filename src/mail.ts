@@ -24,9 +24,11 @@ function esc(value: string | null): string {
     .replace(/>/g, '&gt;');
 }
 
-export async function sendEmail(to: string, subject: string, html: string): Promise<void> {
+// Resolves true only if Resend accepted the message, so callers that need
+// to record "this email was really sent" (e.g. the win-back job) can.
+export async function sendEmail(to: string, subject: string, html: string): Promise<boolean> {
   const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) return;
+  if (!apiKey) return false;
   const from = process.env.MAIL_FROM ?? 'ShelfStock <onboarding@resend.dev>';
 
   try {
@@ -38,19 +40,36 @@ export async function sendEmail(to: string, subject: string, html: string): Prom
     if (res.ok) {
       const body = (await res.json()) as { id?: string };
       console.log(`Email "${subject}" sent to ${to} (${body.id ?? 'no id'})`);
-    } else {
-      console.error(`Email "${subject}" to ${to} failed: ${res.status} ${await res.text()}`);
+      return true;
     }
+    console.error(`Email "${subject}" to ${to} failed: ${res.status} ${await res.text()}`);
+    return false;
   } catch (err) {
     console.error(`Email "${subject}" to ${to} failed:`, err);
+    return false;
   }
+}
+
+export function sendWinback(to: string, name: string | null, storeUrl: string): Promise<boolean> {
+  const greeting = name ? `Hi ${esc(name)},` : 'Hi,';
+  const html = `
+    <div style="font-family:sans-serif;max-width:480px">
+      <h2>We miss you!</h2>
+      <p>${greeting} it's been a while since your last ShelfStock order. We've kept
+      the shelves stocked - come see what's new.</p>
+      <p><a href="${esc(storeUrl)}" style="display:inline-block;background:#2563eb;color:#fff;
+      padding:10px 18px;border-radius:6px;text-decoration:none">Browse the store</a></p>
+      <p style="color:#999;font-size:12px">ShelfStock · You're receiving this because you shopped with us.</p>
+    </div>`;
+
+  return sendEmail(to, 'We miss you at ShelfStock', html);
 }
 
 export function sendOrderConfirmation(
   to: string,
   order: OrderEmailData,
   items: OrderEmailItem[]
-): Promise<void> {
+): Promise<boolean> {
   const rows = items
     .map(
       (i) =>
@@ -76,7 +95,7 @@ export function sendOrderConfirmation(
   return sendEmail(to, `Order #${order.id} confirmed - ShelfStock`, html);
 }
 
-export function sendOrderShipped(to: string, order: OrderEmailData): Promise<void> {
+export function sendOrderShipped(to: string, order: OrderEmailData): Promise<boolean> {
   const html = `
     <div style="font-family:sans-serif;max-width:480px">
       <h2>Your order is on the way!</h2>

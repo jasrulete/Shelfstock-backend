@@ -70,6 +70,17 @@ CREATE TABLE IF NOT EXISTS order_items (
   price_at_purchase NUMERIC(10, 2) NOT NULL CHECK (price_at_purchase >= 0)
 );
 
+-- One row per win-back email sent. The win-back job only emails a customer
+-- if no row exists newer than their last order, so each lapse gets at most
+-- one email no matter how often the job runs.
+CREATE TABLE IF NOT EXISTS winback_emails (
+  id      SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  sent_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_winback_emails_user_id ON winback_emails(user_id);
+
 CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
 CREATE INDEX IF NOT EXISTS idx_products_price ON products(price);
 CREATE INDEX IF NOT EXISTS idx_products_name ON products USING GIN (to_tsvector('english', name));
